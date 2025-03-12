@@ -1,19 +1,26 @@
-CREATE TABLE std7_111.traffic (
+CREATE TABLE default.traffic (
 	plant varchar(4) NULL,
-	"date" varchar(10) NULL,
+	"date" date NULL,
 	"time" varchar(6) NULL,
 	frame_id varchar(10) NULL,
 	quantity int4 NULL
-) 
+)
 WITH (
 	appendonly=true,
-	orientation=column,
+	orientation=row,
 	compresstype=zstd,
 	compresslevel=1
 )
-DISTRIBUTED RANDOMLY;
+DISTRIBUTED BY (frame_id)
+PARTITION BY RANGE (date)
+(
+	START ('2021-01-01'::DATE) INCLUSIVE
+	END ('2021-03-01'::DATE) EXCLUSIVE
+	EVERY (INTERVAL '1 month'),
+	DEFAULT PARTITION def
+);
 
-CREATE TABLE std7_111.bills_head (
+CREATE TABLE default.bills_head (
 	billnum int8 NULL,
 	plant varchar(4) NULL,
 	calday date NULL
@@ -24,9 +31,16 @@ WITH (
 	compresstype=zstd,
 	compresslevel=1
 )
-DISTRIBUTED BY (billnum);
+DISTRIBUTED BY (billnum)
+PARTITION BY RANGE (calday)
+(
+	START ('2021-01-01'::DATE) INCLUSIVE
+	END ('2021-03-01'::DATE) EXCLUSIVE
+	EVERY (INTERVAL '1 month'),
+	DEFAULT PARTITION def
+);
 
-CREATE TABLE std7_111.bills_item (
+CREATE TABLE default.bills_item (
 	billnum int8 NULL,
 	billitem int8 NULL,
 	material int8 NULL,
@@ -42,15 +56,28 @@ WITH (
 	compresstype=zstd,
 	compresslevel=1
 )
-DISTRIBUTED BY (billnum);
+DISTRIBUTED BY (billnum)
+PARTITION BY RANGE (calday)
+(
+	START ('2021-01-01'::DATE) INCLUSIVE
+	END ('2021-03-01'::DATE) EXCLUSIVE
+	EVERY (INTERVAL '1 month'),
+	DEFAULT PARTITION def
+);
 
-CREATE TABLE std7_111.stores (
+CREATE TABLE default.stores (
 	plant varchar(4) NULL,
 	txt text NULL
 )
+WITH (
+	appendonly=true,
+	orientation=column,
+	compresstype=zstd,
+	compresslevel=1
+)
 DISTRIBUTED REPLICATED;
 
-CREATE TABLE std7_111.coupons (
+CREATE TABLE default.coupons (
 	plant varchar(4) NULL,
 	calday date NULL,
 	coupon_num varchar(20) NULL,
@@ -64,20 +91,37 @@ WITH (
 	compresstype=zstd,
 	compresslevel=1
 )
-DISTRIBUTED RANDOMLY;
+DISTRIBUTED BY (billnum)
+PARTITION BY RANGE (calday)
+(
+	START ('2021-01-01'::DATE) INCLUSIVE
+	END ('2021-03-01'::DATE) EXCLUSIVE
+	EVERY (INTERVAL '1 month')
+);
 
-CREATE TABLE std7_111.promos (
+CREATE TABLE default.promos (
 	promo_id varchar NULL,
 	promo_name varchar(20) NULL,
 	promo_type varchar(4) NULL,
 	material int8 NULL,
 	promo_size int8 NULL
 )
+WITH (
+	appendonly=true,
+	orientation=column,
+	compresstype=zstd,
+	compresslevel=1
+)
 DISTRIBUTED REPLICATED;
 
-CREATE TABLE std7_111.promo_types (
+CREATE TABLE default.promo_types (
 	promo_type varchar(4) NULL,
 	"text" text NULL
 ) 
+WITH (
+	appendonly=true,
+	orientation=column,
+	compresstype=zstd,
+	compresslevel=1
+)
 DISTRIBUTED REPLICATED;
-
