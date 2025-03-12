@@ -1,87 +1,144 @@
-create or replace function std7_111.f_load_write_log(p_log_type text, p_log_message text, p_location text)
-	returns void
-	language plpgsql
-	volatile
-as $$
-
-declare
-
-	v_log_type text;
-	v_log_message text;
-	v_sql text;
-	v_location text;
-	v_res text;
+CREATE OR REPLACE FUNCTION default.f_partition_traffic(p_table text, p_partition_key text, p_start_date timestamp, p_end_date timestamp, p_pxf_table text, p_user_id text, p_pass text)
+	RETURNS int4
+	LANGUAGE plpgsql
+	VOLATILE
+AS $$
 	
-begin
+DECLARE 
+    v_ext_table text;          
+    v_temp_table text;         
+    v_sql text;                 
+    v_pxf text;                 
+    v_result text;                     
+    v_dist_key text;               
+    v_params text;                  
+    v_where text;               
+    v_load_interval interval;      
+    v_start_date text;          
+    v_end_date text;           
+    v_table_oid int;                
+    v_cnt int8;                    
+BEGIN
+    
+    v_ext_table = p_table||'_ext';  
+    v_temp_table = p_table||'_tmp';     
+
+    
+    SELECT c.oid
+    INTO v_table_oid
+    FROM pg_class AS c 
+    INNER JOIN pg_namespace AS n ON c.relnamespace = n.oid
+    WHERE n.nspname||'.'||c.relname = p_table
+    LIMIT 1;
+
+    
+    IF v_table_oid = 0 OR v_table_oid IS NULL THEN
+        v_dist_key = 'DISTRIBUTED RANDOMLY';  
+    ELSE
+        v_dist_key = pg_get_table_distributedby(v_table_oid);  
+    END IF;
+
+   
+    SELECT coalesce('with (' || array_to_string(reloptions, ', ') || ')', '')
+    INTO v_params
+    FROM pg_class 
+    WHERE oid = p_table::regclass;
+
+    
+    v_load_interval = '1 month'::INTERVAL;
+
+    
+    v_pxf = 'pxf://'||p_pxf_table||'?PROFILE=Jdbc&JDBC_DRIVER=org.postgresql.Driver&DB_URL=jdbc:postgresql://192.168.214.212:5432/postgres&USER='
+                    ||p_user_id||'&PASS='||p_pass;
+    RAISE NOTICE 'PXF CONNECTION STRING: %', v_pxf;  
+
+   
+    v_sql = 'DROP EXTERNAL TABLE IF EXISTS '||v_ext_table||'; 
+	    CREATE EXTERNAL TABLE '||v_ext_table||'(plant bpchar(4), "date" bpchar(10), "time" bpchar(6), frame_id bpchar(10), quantity int4)
+            LOCATION ('''||v_pxf||''') ON ALL
+            FORMAT ''CUSTOM'' (FORMATTER=''pxfwritable_import'')
+            ENCODING ''UTF8''';
+    RAISE NOTICE 'EXTERNAL TABLE: %', v_sql;  
+    EXECUTE v_sql; 
+
+	WHILE p_start_date < p_end_date LOOP
+
+	    v_start_date := DATE_TRUNC('month', p_start_date);
+	    v_end_date := DATE_TRUNC('month', p_start_date) + v_load_interval;
 	
-	v_log_type = upper(p_log_type);
-	v_location = lower(p_location);
-	if v_log_type not in ('ERROR', 'INFO') then
-	 raise exception 'Illegal log type! Use one of: ERROR, INFO';
-	end if;
+		v_where = 'to_date('||p_partition_key||', ''DD.MM.YYYY'')'||' >= '''||v_start_date||'''::date AND '||'to_date('||p_partition_key||', ''DD.MM.YYYY'')'||' < '''||v_end_date||'''::date';
+	
+	    v_sql = 'DROP TABLE IF EXISTS '||v_temp_table||';
+	                CREATE TABLE '||v_temp_table||' (LIKE '||p_table||') ' ||v_params||' '||v_dist_key||';';    
+	    RAISE NOTICE 'TEMP TABLE: %', v_sql; 
+	    EXECUTE v_sql;  
+	
+	    v_sql = 'INSERT INTO '|| v_temp_table ||' SELECT plant, TO_DATE("date",''DD-MM-YYYY'') as date, "time", frame_id, quantity FROM '||v_ext_table||' WHERE '||v_where;
+	    RAISE NOTICE 'INSERT from EXTERNAL: %', v_sql;  
+	    EXECUTE v_sql;  
+	    GET DIAGNOSTICS v_cnt = ROW_COUNT;  
+	    RAISE NOTICE 'INSERTED ROWS: %', v_cnt;  
+	
+	    EXECUTE 'INSERT INTO '||p_table||' SELECT * FROM '||v_temp_table;
+	
+	    v_sql = 'ALTER TABLE '||p_table||' EXCHANGE PARTITION FOR (DATE '''||p_start_date||''') WITH TABLE '||v_temp_table||' WITH VALIDATION;';        
+	    RAISE NOTICE 'EXCHANGE PARTITION SCRIPT: %', v_sql; 
+	    EXECUTE v_sql; 
 
-raise notice '%: %: <%> Location[%]', clock_timestamp(), v_log_type, p_log_message, v_location;
+		p_start_date := p_start_date + v_load_interval;
 
-v_log_message := replace(p_log_message, '''', '''''');
+	END LOOP;
 
-v_sql = 'INSERT INTO std7_111.logs(log_id, log_type, log_msg, log_location, is_error, log_timestamp, log_user)
-			VALUES ( ' || nextval('std7_111.log_id_seq')|| ' ,
-				   ''' || v_log_type || ''',
-					 ' || coalesce('''' || v_log_message || '''', '''empty''')|| ',
-					 ' || coalesce('''' || v_location || '''', 'null')|| ',
-					 ' || CASE when v_log_type = 'ERROR' then true else false end || ',
-						current_timestamp, current_user);';
-					
-raise notice 'INESRT SQL IS: %', v_sql;
-v_res := dblink('adb_server', v_sql);
-end;
-
+    EXECUTE 'SELECT COUNT(1) FROM '||p_table INTO v_result;
+    RETURN v_result; 
+END;
 $$
-execute on any;
+EXECUTE ON ANY;
 
-create or replace function std7_111.f_load_full(p_table text, p_file_name text)
-	returns int4
-	language plpgsql
-	volatile
-as $$
 
-declare
+
+
+CREATE OR REPLACE FUNCTION default.f_load_full(p_table text, p_file_name text)
+	RETURNS int4
+	LANGUAGE plpgsql
+	VOLATILE
+AS $$
+
+DECLARE 
 
  v_ext_table_name text;
  v_sql text;
  v_gpfdist text;
  v_result int;
- 
-begin
+
+BEGIN
 	
 	v_ext_table_name = p_table||'_ext';
 
-	execute 'truncate table '||p_table;
+	EXECUTE 'TRUNCATE TABLE '||p_table;
 
-	execute 'drop external table if exists '||v_ext_table_name;
+	EXECUTE 'DROP EXTERNAL TABLE IF EXISTS '||v_ext_table_name;
 
-	v_gpfdist = 'gpfdist://172.16.128.154:8080/'||p_file_name||'.csv';
+	v_gpfdist = 'GPFDIST://172.16.128.214:8080/'||p_file_name||'.csv';
+	
+	v_sql = 'CREATE EXTERNAL TABLE '||v_ext_table_name||'(LIKE '||p_table||')
+			 LOCATION ('''||v_gpfdist||'''
+			 ) ON ALL 
+			 FORMAT ''CSV'' ( HEADER DELIMITER '';'' NULL '''' ESCAPE ''"'' QUOTE ''"'' )
+			 ENCODING ''UTF8''
+			 SEGMENT REJECT LIMIT 10 rows';
 
-	v_sql = 'create external table '||v_ext_table_name||'(like '||p_table||')
-			 location ('''||v_gpfdist||''' 
-             ) on all 
-			 format ''csv'' ( header delimiter '';'' null '''' escape ''"'' quote ''"'')
-			 encoding ''utf8''';
+	RAISE NOTICE 'EXTERNAL TABLE IS: %', v_sql;
 
-	raise notice 'external table is: %', v_sql;
+	EXECUTE v_sql;
 
-	execute v_sql;
+	EXECUTE 'INSERT INTO '||p_table||' SELECT * FROM '||v_ext_table_name;
 
-	execute 'insert into '||p_table||' select * from '||v_ext_table_name;
+	EXECUTE 'SELECT COUNT(1) FROM '||p_table INTO v_result;
 
-	execute 'select count(1) from '||p_table into v_result;
+	RETURN v_result; 
 
-	return v_result;
-end;
-
-$$
-execute on any;
-
+END;
 
 $$
 EXECUTE ON ANY;
